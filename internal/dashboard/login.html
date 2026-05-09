@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>kmresolv — login</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #f8f8f7;
+            --surface: #ffffff;
+            --surface2: #f3f3f1;
+            --border: #e8e8e5;
+            --border2: #d8d8d4;
+            --text: #1a1a18;
+            --text2: #6b6b67;
+            --text3: #b0b0aa;
+            --accent: #2563eb;
+            --accent-light: #eff4ff;
+            --red: #dc2626;
+            --red-light: #fef2f2;
+            --radius: 10px;
+            --radius-sm: 6px;
+            --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+            --font: 'Geist', system-ui, sans-serif;
+            --mono: 'Geist Mono', monospace;
+        }
+
+        [data-theme="dark"] {
+            --bg: #111110;
+            --surface: #1c1c1a;
+            --surface2: #252523;
+            --border: #2e2e2b;
+            --border2: #3d3d39;
+            --text: #eeeeed;
+            --text2: #9a9a94;
+            --text3: #5a5a56;
+            --accent: #3b82f6;
+            --accent-light: #172035;
+            --red: #ef4444;
+            --red-light: #280f0f;
+        }
+
+        body {
+            font-family: var(--font);
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-md);
+            width: 100%;
+            max-width: 380px;
+            padding: 32px;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+            font-size: 16px;
+            letter-spacing: -0.02em;
+            margin-bottom: 28px;
+        }
+
+        .logo-mark {
+            width: 26px;
+            height: 26px;
+            background: var(--accent);
+            border-radius: 7px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .logo-mark svg {
+            width: 14px;
+            height: 14px;
+        }
+
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            margin-bottom: 14px;
+        }
+
+        label {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text2);
+        }
+
+        input {
+            font-family: var(--font);
+            font-size: 13px;
+            padding: 8px 12px;
+            border: 1px solid var(--border2);
+            border-radius: var(--radius-sm);
+            background: var(--surface);
+            color: var(--text);
+            outline: none;
+            transition: border-color 0.12s, box-shadow 0.12s;
+            width: 100%;
+        }
+
+        input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px #2563eb18;
+        }
+
+        input::placeholder {
+            color: var(--text3);
+        }
+
+        .btn {
+            font-family: var(--font);
+            font-size: 13px;
+            font-weight: 500;
+            padding: 9px 14px;
+            border-radius: var(--radius-sm);
+            border: none;
+            background: var(--accent);
+            color: white;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 8px;
+            transition: background 0.12s;
+        }
+
+        .btn:hover {
+            background: #1d4ed8;
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .error {
+            font-size: 12px;
+            color: var(--red);
+            background: var(--red-light);
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            margin-top: 12px;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <div class="logo">
+            kmresolv
+        </div>
+
+        <div class="field">
+            <label for="username">Username</label>
+            <input type="text" id="username" placeholder="admin" autocomplete="username">
+        </div>
+        <div class="field">
+            <label for="password">Password</label>
+            <input type="password" id="password" placeholder="••••••••" autocomplete="current-password">
+        </div>
+
+        <button class="btn" id="login-btn">Sign in</button>
+        <div class="error" id="error-msg">Invalid username or password</div>
+    </div>
+
+    <script>
+        (function () {
+            const saved = localStorage.getItem('theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            document.documentElement.setAttribute('data-theme',
+                saved ? saved : (prefersDark ? 'dark' : 'light'));
+        })();
+
+        async function hmacHex(nonce, password) {
+            const enc = new TextEncoder();
+            const key = await crypto.subtle.importKey(
+                'raw',
+                enc.encode(password),
+                { name: 'HMAC', hash: 'SHA-256' },
+                false,
+                ['sign']
+            );
+            const sig = await crypto.subtle.sign('HMAC', key, enc.encode(nonce));
+            return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function login() {
+            const btn = document.getElementById('login-btn');
+            const err = document.getElementById('error-msg');
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) return;
+
+            btn.disabled = true;
+            btn.textContent = 'Signing in…';
+            err.style.display = 'none';
+
+            try {
+                const { nonce } = await fetch('/api/login/challenge', {
+                    method: 'POST'
+                }).then(r => r.json());
+
+                const response = await hmacHex(nonce, password);
+
+                const data = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, nonce, response })
+                }).then(r => r.json());
+
+                if (data.ok) {
+                    window.location.href = '/';
+                } else {
+                    err.textContent = data.error || 'Invalid username or password';
+                    err.style.display = 'block';
+                    btn.disabled = false;
+                    btn.textContent = 'Sign in';
+                }
+            } catch (e) {
+                err.textContent = 'Could not reach server';
+                err.style.display = 'block';
+                btn.disabled = false;
+                btn.textContent = 'Sign in';
+            }
+        }
+
+        document.getElementById('login-btn').addEventListener('click', login);
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Enter') login();
+        });
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,167 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      should_release: ${{ steps.parse.outputs.should_release }}
+    steps:
+      - name: Parse commit message
+        id: parse
+        run: |
+          MSG="${{ github.event.head_commit.message }}"
+          if [[ "$MSG" =~ \[([0-9]+\.[0-9]+\.[0-9]+)\] ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Found version: $VERSION"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "No version tag in commit message"
+          fi
+
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - goos: linux
+            goarch: arm
+            goarm: "7"
+            suffix: linux-armv7
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        if: matrix.goarch == 'amd64'
+        run: go test ./...
+
+      - name: Vet
+        if: matrix.goarch == 'amd64'
+        run: go vet ./...
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm || '' }}
+          CGO_ENABLED: "0"
+        run: go build -trimpath -o "kmresolv-${{ matrix.suffix }}" ./cmd/kmresolv
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmresolv-${{ matrix.suffix }}
+          path: kmresolv-${{ matrix.suffix }}
+          if-no-files-found: error
+
+  build-jar:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build JAR
+        working-directory: minecraft-server
+        run: mvn clean package -q --no-transfer-progress
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmresolv-jar
+          path: minecraft-server/target/kmresolv-1.0.0-SNAPSHOT.jar
+          if-no-files-found: error
+
+  release:
+    needs: [check-version, build, build-jar]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: notes
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          PREV_TAG_COMMIT=$(git log --format="%H %s" HEAD~1 | grep -E '\[[0-9]+\.[0-9]+\.[0-9]+\]' | head -1 | awk '{print $1}' || true)
+
+          if [ -z "$PREV_TAG_COMMIT" ]; then
+            RANGE="$(git rev-list --max-parents=0 HEAD)..HEAD~1"
+          else
+            RANGE="${PREV_TAG_COMMIT}..HEAD~1"
+          fi
+
+          CURRENT_MSG=$(git log -1 --format="%s" | sed 's/ \[[0-9]*\.[0-9]*\.[0-9]*\]//')
+          RANGE_NOTES=$(git log "$RANGE" --format="- %s" --reverse 2>/dev/null || true)
+
+          if [ -n "$RANGE_NOTES" ]; then
+            NOTES="${RANGE_NOTES}"$'\n'"- ${CURRENT_MSG}"
+          else
+            NOTES="- ${CURRENT_MSG}"
+          fi
+
+          {
+            echo "## What's Changed"
+            echo ""
+            echo "$NOTES"
+            echo ""
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/commits/v${VERSION}"
+          } > release_notes.md
+
+          cat release_notes.md
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release_assets
+          find artifacts -type f | while read f; do
+            cp "$f" release_assets/
+          done
+          cp config.yml release_assets/config.yml
+          cp kmresolv.polar release_assets/kmresolv.polar
+          ls -lh release_assets/
+
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes-file release_notes.md \
+            release_assets/*

@@ -1,0 +1,43 @@
+server:
+    listen: 0.0.0.0
+    port: 53
+    # Can be "debug", "info", "warn", "error"
+    log_level: info
+resolver:
+    timeout: 3
+    max_depth: 10
+    edns0: true
+    tcp_fallback: true
+    cache:
+        enabled: true
+        negative_ttl: 300
+        prefetch: true
+records:
+    - name: example.home
+      type: A
+      ttl: 3600
+      value: 192.168.1.50
+filtering:
+    mode: "off"
+    inline:
+        - ads.example.com
+        - tracker.example.net
+    lists:
+        - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+        - /etc/kmresolv/custom.list
+dashboard:
+    enabled: true
+    listen: 0.0.0.0
+    port: 8080
+    auth:
+        # Leave username and password empty to disable authentication
+        username: "admin"
+        password: "changeme"
+updater:
+    check_enabled: true
+minecraft:
+    enabled: false
+    listen: 0.0.0.0
+    port: 25565
+    min_ram: 1G
+    max_ram: 2G

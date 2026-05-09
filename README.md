@@ -1,0 +1,123 @@
+# kmresolv
+
+A self-hosted recursive DNS resolver with ad/tracker filtering, a web dashboard, and an optional Minecraft server.
+
+## Features
+
+- **Recursive resolution** — resolves DNS queries from the root, with configurable depth and EDNS0 support
+- **Response cache** — TTL-aware cache with negative caching and background prefetch
+- **TCP fallback** — retries truncated UDP responses over TCP automatically
+- **Filtering** — blacklist or whitelist mode; loads inline domains and remote/local host-format lists (e.g. StevenBlack/hosts)
+- **Local records** — define A, AAAA, CNAME, MX, and TXT records in config for your home network
+- **Web dashboard** — query log, stats, block/unblock controls, and cache management behind optional basic auth
+- **Minecraft server** — optionally runs a bundled Minestom-based Minecraft server managed through the dashboard
+- **CLI** — `status`, `flush`, `block`, `unblock`, and `log` subcommands talk to the running daemon over HTTP
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kohanmathers/kmresolv/main/install.sh | sudo bash
+```
+
+The installer fetches the latest release binaries, writes everything to `/etc/kmresolv`, and sets up a systemd service.
+
+## Configuration
+
+The default config is installed at `/etc/kmresolv/config.yml`. Edit it and restart the service.
+
+```yaml
+server:
+  listen: 0.0.0.0
+  port: 53
+  log_level: info        # debug | info | warn | error
+
+resolver:
+  timeout: 3
+  max_depth: 10
+  edns0: true
+  tcp_fallback: true
+  cache:
+    enabled: true
+    negative_ttl: 300
+    prefetch: true
+
+records:
+  - name: example.home
+    type: A
+    ttl: 3600
+    value: 192.168.1.50
+
+filtering:
+  mode: "off"            # off | blacklist | whitelist
+  inline:
+    - ads.example.com
+  lists:
+    - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+    - /etc/kmresolv/custom.list
+
+dashboard:
+  enabled: true
+  listen: 0.0.0.0
+  port: 8080
+  auth:                   # Leave empty to disable auth
+    username: "admin"
+    password: "changeme"
+
+updater:
+  check_enabled: true
+
+minecraft:
+  enabled: false
+  listen: 0.0.0.0
+  port: 25565
+  min_ram: 1G
+  max_ram: 2G
+```
+
+## CLI
+
+```
+kmresolv serve [--config path]           start the DNS server
+kmresolv status                          show resolver stats
+kmresolv flush [--expired|--negative]    flush the cache
+kmresolv block <domain>                  add a domain to the blocklist
+kmresolv unblock <domain>                remove a domain from the blocklist
+kmresolv log [--n 50]                    show recent query log
+kmresolv version                         print version
+```
+
+All subcommands accept `--host` and `--port` to target a non-default dashboard address.
+
+## Service management
+
+```bash
+systemctl status kmresolv
+systemctl restart kmresolv
+journalctl -u kmresolv -f
+```
+
+## Minecraft server
+
+Set `minecraft.enabled: true` in config and ensure `kmresolv-1.0.0-SNAPSHOT.jar` is in `/etc/kmresolv/`. The Minecraft process is started and managed by the kmresolv daemon; OpenJDK 25 is required. The install script will offer to install it for you.
+
+## Building from source
+
+Requirements: Go 1.24+, Maven 3.9+ (for the Minecraft jar)
+
+```bash
+# DNS resolver
+go build ./cmd/kmresolv
+
+# Minecraft server jar
+cd minecraft-server && mvn clean package
+```
+
+## Releases
+
+Releases are triggered by including a version tag in a commit message pushed to `main`:
+
+```
+Fix CNAME chain resolution [1.2.3]
+```
+
+GitHub Actions will run tests, build binaries for `linux/amd64`, `linux/arm64`, and `linux/armv7`, build the Minecraft jar, and publish a release with all assets.

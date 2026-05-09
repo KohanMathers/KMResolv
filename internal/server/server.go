@@ -1,0 +1,375 @@
+package server
+
+import (
+	"fmt"
+	"net"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/kohanmathers/kmresolv/internal/cache"
+	"github.com/kohanmathers/kmresolv/internal/config"
+	"github.com/kohanmathers/kmresolv/internal/dns"
+	"github.com/kohanmathers/kmresolv/internal/filter"
+	"github.com/kohanmathers/kmresolv/internal/logger"
+	"github.com/kohanmathers/kmresolv/internal/records"
+)
+
+type Server struct {
+	cfg     *config.Config
+	cache   *cache.Cache
+	filter  *filter.Filter
+	records *records.RecordStore
+	qlog    *QueryLog
+
+	statTotalQueries   atomic.Uint64
+	statCacheHits      atomic.Uint64
+	statBlocked        atomic.Uint64
+	statTotalLatencyMs atomic.Uint64
+
+	startTime time.Time
+
+	minecraft *MinecraftServer
+}
+
+func New(cfg *config.Config) *Server {
+	s := &Server{
+		cfg:       cfg,
+		filter:    filter.NewFilter(cfg),
+		records:   records.NewRecordStore(cfg),
+		qlog:      &QueryLog{max: 500},
+		cache:     cache.NewCache(),
+		startTime: time.Now(),
+	}
+	if cfg.Minecraft.Enabled {
+		host := cfg.Dashboard.Listen
+		if host == "0.0.0.0" {
+			host = "127.0.0.1"
+		}
+		apiURL := fmt.Sprintf("http://%s:%d", host, cfg.Dashboard.Port)
+		s.minecraft = NewMinecraftServer(&cfg.Minecraft, apiURL)
+	}
+	s.cache.SetPrefetchFn(func(name string, qtype uint16) (*dns.Message, error) {
+		return s.resolveAt(name, qtype, RootServers, 0)
+	})
+	return s
+}
+
+func (s *Server) Start() error {
+	conn, err := net.ListenPacket("udp", s.cfg.Addr())
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	defer conn.Close()
+	logger.LogInfo("listening on %s", s.cfg.Addr())
+
+	buf := make([]byte, udpBufSize)
+	for {
+		n, src, err := conn.ReadFrom(buf)
+		if err != nil {
+			logger.LogError("read error: %v", err)
+			continue
+		}
+		raw := make([]byte, n)
+		copy(raw, buf[:n])
+		go s.handleQuery(conn, src, raw)
+	}
+}
+
+func (s *Server) handleQuery(conn net.PacketConn, src net.Addr, raw []byte) {
+	start := time.Now()
+	msg, err := dns.ParseMessage(raw)
+	if err != nil {
+		logger.LogError("parse error from %s: %v", src, err)
+		return
+	}
+	if len(msg.Questions) == 0 {
+		return
+	}
+
+	q := msg.Questions[0]
+	logger.LogDebug("query from %s: %s type=%d", src, q.Name, q.Type)
+	s.statTotalQueries.Add(1)
+
+	tname := typeName(q.Type)
+
+	if s.filter.Blocked(q.Name) {
+		logger.LogInfo("blocked: %s from client %s", q.Name, src)
+		s.statBlocked.Add(1)
+		conn.WriteTo(nxdomain(msg), src)
+		s.qlog.Add(QueryEntry{
+			Time:    time.Now(),
+			Domain:  q.Name,
+			Type:    tname,
+			Client:  src.String(),
+			Status:  "blocked",
+			Latency: time.Since(start).Milliseconds(),
+		})
+		return
+	}
+
+	if rrs := s.records.Lookup(q.Name, q.Type); rrs != nil {
+		logger.LogDebug("custom record hit: %s", q.Name)
+		resp := &dns.Message{}
+		resp.ID = msg.ID
+		resp.SetQR(true)
+		resp.SetRA(true)
+		resp.SetAA(true)
+		resp.Questions = msg.Questions
+		resp.Answers = rrs
+		packed, err := resp.Pack()
+		if err != nil {
+			logger.LogError("pack error for custom record: %v", err)
+			return
+		}
+		conn.WriteTo(packed, src)
+		s.qlog.Add(QueryEntry{
+			Time:    time.Now(),
+			Domain:  q.Name,
+			Type:    tname,
+			Client:  src.String(),
+			Status:  "resolved",
+			Latency: time.Since(start).Milliseconds(),
+		})
+		return
+	}
+
+	wasCached := s.cache.Get(q.Name, q.Type, s.cfg) != nil
+	resp, resolveErr := s.resolve(q.Name, q.Type)
+
+	latency := time.Since(start).Milliseconds()
+	s.statTotalLatencyMs.Add(uint64(latency))
+
+	status := "resolved"
+	if resolveErr != nil {
+		logger.LogWarn("resolve error for %s: %v", q.Name, resolveErr)
+		packed, _ := servfail(msg).Pack()
+		conn.WriteTo(packed, src)
+		s.qlog.Add(QueryEntry{
+			Time:    time.Now(),
+			Domain:  q.Name,
+			Type:    tname,
+			Client:  src.String(),
+			Status:  "error",
+			Latency: latency,
+		})
+		return
+	}
+
+	if wasCached {
+		status = "cached"
+		s.statCacheHits.Add(1)
+	}
+
+	resp.ID = msg.ID
+	resp.SetQR(true)
+	resp.SetRA(true)
+	resp.SetAA(false)
+	resp.Questions = msg.Questions
+
+	packed, err := resp.Pack()
+	if err != nil {
+		logger.LogError("pack error: %v", err)
+		return
+	}
+	conn.WriteTo(packed, src)
+	s.qlog.Add(QueryEntry{
+		Time:    time.Now(),
+		Domain:  q.Name,
+		Type:    tname,
+		Client:  src.String(),
+		Status:  status,
+		Latency: latency,
+	})
+}
+
+type StatsSnapshot struct {
+	TotalQueries   uint64
+	CacheHits      uint64
+	Blocked        uint64
+	TotalLatencyMs uint64
+	CacheSize      int
+	CacheNegative  int
+	UptimeSeconds  int
+}
+
+func (s *Server) Stats() StatsSnapshot {
+	return StatsSnapshot{
+		TotalQueries:   s.statTotalQueries.Load(),
+		CacheHits:      s.statCacheHits.Load(),
+		Blocked:        s.statBlocked.Load(),
+		TotalLatencyMs: s.statTotalLatencyMs.Load(),
+		CacheSize:      s.cache.Size(),
+		CacheNegative:  s.cache.NegativeSize(),
+		UptimeSeconds:  int(time.Since(s.startTime).Seconds()),
+	}
+}
+
+func (s *Server) FlushCache(mode string) {
+	s.cache.Flush(mode)
+}
+
+type FilterStatus struct {
+	Mode   string
+	Size   int
+	Inline []string
+}
+
+func (s *Server) FilterStatus() FilterStatus {
+	return FilterStatus{
+		Mode:   s.cfg.Filtering.Mode,
+		Size:   s.filter.Size(),
+		Inline: s.filter.InlineDomains(),
+	}
+}
+
+func (s *Server) AddBlock(domain string) error {
+	s.filter.Add(domain)
+	s.cfg.Filtering.Inline = append(s.cfg.Filtering.Inline, domain)
+	return s.cfg.Save()
+}
+
+func (s *Server) RemoveBlock(domain string) error {
+	s.filter.Remove(domain)
+	updated := s.cfg.Filtering.Inline[:0]
+	for _, d := range s.cfg.Filtering.Inline {
+		if !strings.EqualFold(d, domain) {
+			updated = append(updated, d)
+		}
+	}
+	s.cfg.Filtering.Inline = updated
+	return s.cfg.Save()
+}
+
+func (s *Server) SetFilterMode(mode string) error {
+	s.cfg.Filtering.Mode = mode
+	s.filter.SetMode(mode)
+	return s.cfg.Save()
+}
+
+func (s *Server) RecentQueries(n int) []QueryEntry {
+	return s.qlog.Recent(n)
+}
+
+func (s *Server) ConfigRecords() []config.RecordConfig {
+	return s.cfg.Records
+}
+
+func (s *Server) RemoveRecord(name, rtype string) error {
+	updated := s.cfg.Records[:0]
+	for _, rec := range s.cfg.Records {
+		if !(strings.EqualFold(rec.Name, name) && strings.EqualFold(rec.Type, rtype)) {
+			updated = append(updated, rec)
+		}
+	}
+	s.cfg.Records = updated
+	s.records = records.NewRecordStore(s.cfg)
+	return s.cfg.Save()
+}
+
+type SettingsSnapshot struct {
+	EDNS0       bool
+	TCPFallback bool
+	Prefetch    bool
+	UpdateCheck bool
+	Listen      string
+	LogLevel    string
+	Timeout     int
+	MaxDepth    int
+	NegativeTTL int
+}
+
+func (s *Server) GetSettings() SettingsSnapshot {
+	return SettingsSnapshot{
+		EDNS0:       s.cfg.Resolver.EDNS0,
+		TCPFallback: s.cfg.Resolver.TCPFallback,
+		Prefetch:    s.cfg.Resolver.Cache.Prefetch,
+		UpdateCheck: s.cfg.Updater.CheckEnabled,
+		Listen:      s.cfg.Addr(),
+		LogLevel:    s.cfg.Server.LogLevel,
+		Timeout:     s.cfg.Resolver.Timeout,
+		MaxDepth:    s.cfg.Resolver.MaxDepth,
+		NegativeTTL: s.cfg.Resolver.Cache.NegativeTTL,
+	}
+}
+
+func (s *Server) UpdateSettings(edns0, tcpFallback, prefetch, updateCheck *bool) error {
+	if edns0 != nil {
+		s.cfg.Resolver.EDNS0 = *edns0
+	}
+	if tcpFallback != nil {
+		s.cfg.Resolver.TCPFallback = *tcpFallback
+	}
+	if prefetch != nil {
+		s.cfg.Resolver.Cache.Prefetch = *prefetch
+	}
+	if updateCheck != nil {
+		s.cfg.Updater.CheckEnabled = *updateCheck
+	}
+	return s.cfg.Save()
+}
+
+func (s *Server) Cfg() *config.Config { return s.cfg }
+
+func nxdomain(req *dns.Message) []byte {
+	resp := &dns.Message{}
+	resp.ID = req.ID
+	resp.SetQR(true)
+	resp.SetRA(true)
+	resp.SetRcode(dns.RcodeNXDomain)
+	resp.Questions = req.Questions
+	packed, _ := resp.Pack()
+	return packed
+}
+
+func servfail(req *dns.Message) *dns.Message {
+	resp := &dns.Message{}
+	resp.ID = req.ID
+	resp.SetQR(true)
+	resp.SetRA(true)
+	resp.SetRcode(dns.RcodeServFail)
+	resp.Questions = req.Questions
+	return resp
+}
+
+func typeName(t uint16) string {
+	switch t {
+	case dns.TypeA:
+		return "A"
+	case dns.TypeAAAA:
+		return "AAAA"
+	case dns.TypeNS:
+		return "NS"
+	case dns.TypeCNAME:
+		return "CNAME"
+	case dns.TypeMX:
+		return "MX"
+	case dns.TypeTXT:
+		return "TXT"
+	case dns.TypeSOA:
+		return "SOA"
+	default:
+		return fmt.Sprintf("%d", t)
+	}
+}
+
+func (s *Server) StartMinecraft() error {
+	if s.minecraft == nil {
+		return fmt.Errorf("minecraft not configured")
+	}
+	return s.minecraft.Start()
+}
+
+func (s *Server) StopMinecraft() error {
+	if s.minecraft == nil {
+		return nil
+	}
+	return s.minecraft.Stop()
+}
+
+func (s *Server) MinecraftRunning() bool {
+	if s.minecraft == nil {
+		return false
+	}
+	return s.minecraft.Running()
+}

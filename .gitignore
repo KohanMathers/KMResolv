@@ -1,0 +1,5 @@
+kmresolv
+!cmd/kmresolv/
+target/
+dependency-reduced-pom.xml
+!minecraft-server/src/main/java/me/kmathers/kmresolv/
