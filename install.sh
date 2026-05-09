@@ -191,7 +191,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${binary}
+ExecStart=${binary} serve --config ${INSTALL_DIR}/config.yml
 WorkingDirectory=${INSTALL_DIR}
 Restart=on-failure
 RestartSec=5
