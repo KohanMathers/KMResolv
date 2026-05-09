@@ -10,7 +10,7 @@ A self-hosted recursive DNS resolver with ad/tracker filtering, a web dashboard,
 - **Filtering** — blacklist or whitelist mode; loads inline domains and remote/local host-format lists (e.g. StevenBlack/hosts)
 - **Local records** — define A, AAAA, CNAME, MX, and TXT records in config for your home network
 - **Web dashboard** — query log, stats, block/unblock controls, and cache management behind optional basic auth
-- **Minecraft server** — optionally runs a bundled Minestom-based Minecraft server managed through the dashboard
+- **Minecraft server** — optionally runs a bundled Minestom-based Minecraft server to act as a control room for the same settings managed through the dashboard
 - **CLI** — `status`, `flush`, `block`, `unblock`, and `log` subcommands talk to the running daemon over HTTP
 
 ## Install
