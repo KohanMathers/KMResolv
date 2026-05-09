@@ -89,8 +89,7 @@ func (s *Server) resolveAt(name string, qtype uint16, servers []string, depth in
 
 		nsNames := extractNS(resp)
 		if len(nsNames) == 0 {
-			lastErr = fmt.Errorf("no answers and no referral from %s for %s", server, name)
-			continue
+			return resp, nil
 		}
 
 		logger.LogDebug("referral from %s → %v (depth %d)", server, nsNames, depth)
@@ -223,14 +222,21 @@ func extractNS(m *dns.Message) []string {
 func extractGlue(m *dns.Message, nsNames []string) []string {
 	nsSet := make(map[string]bool)
 	for _, n := range nsNames {
-		nsSet[n] = true
+		nsSet[strings.ToLower(n)] = true
 	}
 	var ips []string
 	for _, rr := range m.Additional {
-		if rr.Type == dns.TypeA && nsSet[rr.Name] {
-			ip, err := dns.ParseA(rr.Data)
-			if err == nil {
+		if !nsSet[strings.ToLower(rr.Name)] {
+			continue
+		}
+		switch rr.Type {
+		case dns.TypeA:
+			if ip, err := dns.ParseA(rr.Data); err == nil {
 				ips = append(ips, ip)
+			}
+		case dns.TypeAAAA:
+			if len(rr.Data) == 16 {
+				ips = append(ips, "["+net.IP(rr.Data).String()+"]")
 			}
 		}
 	}
@@ -253,20 +259,32 @@ func (s *Server) resolveNSParallel(nsNames []string, depth int) ([]string, error
 	for _, ns := range nsNames {
 		ns := ns
 		go func() {
-			nsResp, err := s.resolveAt(ns, dns.TypeA, RootServers, depth+1)
-			if err != nil {
-				logger.LogDebug("parallel NS resolve failed for %s: %v", ns, err)
-				results <- result{err: err}
-				return
-			}
 			var ips []string
-			for _, rr := range nsResp.Answers {
-				if rr.Type == dns.TypeA {
-					ip, err := dns.ParseA(rr.Data)
-					if err == nil {
-						ips = append(ips, ip)
+			if r, err := s.resolveAt(ns, dns.TypeA, RootServers, depth+1); err != nil {
+				logger.LogDebug("parallel NS resolve A failed for %s: %v", ns, err)
+			} else {
+				for _, rr := range r.Answers {
+					if rr.Type == dns.TypeA {
+						if ip, err := dns.ParseA(rr.Data); err == nil {
+							ips = append(ips, ip)
+						}
 					}
 				}
+			}
+			if len(ips) == 0 {
+				if r, err := s.resolveAt(ns, dns.TypeAAAA, RootServers, depth+1); err != nil {
+					logger.LogDebug("parallel NS resolve AAAA failed for %s: %v", ns, err)
+				} else {
+					for _, rr := range r.Answers {
+						if rr.Type == dns.TypeAAAA && len(rr.Data) == 16 {
+							ips = append(ips, "["+net.IP(rr.Data).String()+"]")
+						}
+					}
+				}
+			}
+			if len(ips) == 0 {
+				results <- result{err: fmt.Errorf("no IPs found for NS %s", ns)}
+				return
 			}
 			results <- result{ips: ips}
 		}()
