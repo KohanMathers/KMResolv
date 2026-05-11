@@ -12,6 +12,11 @@ import (
 
 type PrefetchFn func(name string, qtype uint16) (*dns.Message, error)
 
+type cacheKey struct {
+	name  string
+	qtype uint16
+}
+
 type cacheEntry struct {
 	msg         *dns.Message
 	expires     time.Time
@@ -27,8 +32,8 @@ const numShards = 64
 
 type cacheShard struct {
 	mu       sync.RWMutex
-	entries  map[string]*cacheEntry
-	negative map[string]negEntry
+	entries  map[cacheKey]*cacheEntry
+	negative map[cacheKey]negEntry
 }
 
 type Cache struct {
@@ -41,24 +46,26 @@ func (c *Cache) SetMinTTL(n uint32) {
 	c.minTTL = n
 }
 
-func shardIdx(key string) uint32 {
+func shardIdx(k cacheKey) uint32 {
 	var h uint32 = 2166136261
-	for i := 0; i < len(key); i++ {
-		h ^= uint32(key[i])
+	for i := 0; i < len(k.name); i++ {
+		h ^= uint32(k.name[i])
 		h *= 16777619
 	}
+	h ^= uint32(k.qtype)
+	h *= 16777619
 	return h & (numShards - 1)
 }
 
-func (c *Cache) shard(key string) *cacheShard {
-	return &c.shards[shardIdx(key)]
+func (c *Cache) shard(k cacheKey) *cacheShard {
+	return &c.shards[shardIdx(k)]
 }
 
 func NewCache() *Cache {
 	c := &Cache{}
 	for i := range c.shards {
-		c.shards[i].entries = make(map[string]*cacheEntry)
-		c.shards[i].negative = make(map[string]negEntry)
+		c.shards[i].entries = make(map[cacheKey]*cacheEntry)
+		c.shards[i].negative = make(map[cacheKey]negEntry)
 	}
 	go c.evictLoop()
 	return c
@@ -72,32 +79,28 @@ func (c *Cache) SetNegative(name string, qtype uint16, ttl int) {
 	if ttl == 0 {
 		ttl = 300
 	}
-	key := cacheKey(name, qtype)
-	s := c.shard(key)
+	k := cacheKey{name, qtype}
+	s := c.shard(k)
 	s.mu.Lock()
-	s.negative[key] = negEntry{expires: time.Now().Add(time.Duration(ttl) * time.Second)}
+	s.negative[k] = negEntry{expires: time.Now().Add(time.Duration(ttl) * time.Second)}
 	s.mu.Unlock()
 	logger.LogDebug("cache negative: %s TTL=%ds", name, ttl)
 }
 
 func (c *Cache) IsNegative(name string, qtype uint16) bool {
-	key := cacheKey(name, qtype)
-	s := c.shard(key)
+	k := cacheKey{name, qtype}
+	s := c.shard(k)
 	s.mu.RLock()
-	e, ok := s.negative[key]
+	e, ok := s.negative[k]
 	s.mu.RUnlock()
 	return ok && time.Now().Before(e.expires)
 }
 
-func cacheKey(name string, qtype uint16) string {
-	return name + ":" + string(rune(qtype))
-}
-
 func (c *Cache) Get(name string, qtype uint16, cfg *config.Config) *dns.Message {
-	key := cacheKey(name, qtype)
-	s := c.shard(key)
+	k := cacheKey{name, qtype}
+	s := c.shard(k)
 	s.mu.RLock()
-	e, ok := s.entries[key]
+	e, ok := s.entries[k]
 	s.mu.RUnlock()
 	if !ok || time.Now().After(e.expires) {
 		return nil
@@ -152,10 +155,10 @@ func (c *Cache) Set(name string, qtype uint16, msg *dns.Message) {
 		ttl = c.minTTL
 	}
 	now := time.Now()
-	key := cacheKey(name, qtype)
-	s := c.shard(key)
+	k := cacheKey{name, qtype}
+	s := c.shard(k)
 	s.mu.Lock()
-	s.entries[key] = &cacheEntry{
+	s.entries[k] = &cacheEntry{
 		msg:     msg,
 		expires: now.Add(time.Duration(ttl) * time.Second),
 		cached:  now,
@@ -191,7 +194,7 @@ func (c *Cache) evictLoop() {
 
 func (c *Cache) evictShard(s *cacheShard, now time.Time) {
 	s.mu.RLock()
-	var deadEntries, deadNeg []string
+	var deadEntries, deadNeg []cacheKey
 	for k, e := range s.entries {
 		if now.After(e.expires) {
 			deadEntries = append(deadEntries, k)
@@ -252,7 +255,7 @@ func (c *Cache) Flush(mode string) {
 		s.mu.Lock()
 		switch mode {
 		case "negative":
-			s.negative = make(map[string]negEntry)
+			s.negative = make(map[cacheKey]negEntry)
 		case "expired":
 			now := time.Now()
 			for k, e := range s.entries {
@@ -266,8 +269,8 @@ func (c *Cache) Flush(mode string) {
 				}
 			}
 		default:
-			s.entries = make(map[string]*cacheEntry)
-			s.negative = make(map[string]negEntry)
+			s.entries = make(map[cacheKey]*cacheEntry)
+			s.negative = make(map[cacheKey]negEntry)
 		}
 		s.mu.Unlock()
 	}

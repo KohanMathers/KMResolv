@@ -28,13 +28,13 @@ func makeMsg(ttl uint32) *dns.Message {
 }
 
 func TestCacheKey(t *testing.T) {
-	if cacheKey("a.com", 1) == cacheKey("a.com", 28) {
+	if (cacheKey{"a.com", 1}) == (cacheKey{"a.com", 28}) {
 		t.Error("different qtypes must produce different keys")
 	}
-	if cacheKey("a.com", 1) == cacheKey("b.com", 1) {
+	if (cacheKey{"a.com", 1}) == (cacheKey{"b.com", 1}) {
 		t.Error("different names must produce different keys")
 	}
-	if cacheKey("a.com", 1) != cacheKey("a.com", 1) {
+	if (cacheKey{"a.com", 1}) != (cacheKey{"a.com", 1}) {
 		t.Error("same inputs must produce same key")
 	}
 }
@@ -79,7 +79,7 @@ func TestTTLDecrement(t *testing.T) {
 	cfg := cfgWithCache(false)
 
 	const original uint32 = 300
-	key := cacheKey("example.com", dns.TypeA)
+	key := cacheKey{"example.com", dns.TypeA}
 	elapsed := 10 * time.Second
 
 	s := &c.shards[shardIdx(key)]
@@ -147,7 +147,7 @@ func TestNegativeCacheDefaultTTL(t *testing.T) {
 func TestNegativeCacheExpiredEntry(t *testing.T) {
 	c := NewCache()
 
-	negKey := cacheKey("old.com", dns.TypeA)
+	negKey := cacheKey{"old.com", dns.TypeA}
 	s := &c.shards[shardIdx(negKey)]
 	s.mu.Lock()
 	s.negative[negKey] = negEntry{expires: time.Now().Add(-1 * time.Second)}
@@ -192,7 +192,7 @@ func TestFlushExpired(t *testing.T) {
 	c := NewCache()
 	c.Set("live.com", dns.TypeA, makeMsg(3600))
 
-	expKey := cacheKey("expired.com", dns.TypeA)
+	expKey := cacheKey{"expired.com", dns.TypeA}
 	expShard := &c.shards[shardIdx(expKey)]
 	expShard.mu.Lock()
 	expShard.entries[expKey] = &cacheEntry{
@@ -223,7 +223,7 @@ func TestPrefetchTrigger(t *testing.T) {
 		return makeMsg(300), nil
 	})
 
-	key := cacheKey("prefetch.com", dns.TypeA)
+	key := cacheKey{"prefetch.com", dns.TypeA}
 	now := time.Now()
 	ps := &c.shards[shardIdx(key)]
 	ps.mu.Lock()
