@@ -7,59 +7,57 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/kohanmathers/kmresolv/internal/config"
 	"github.com/kohanmathers/kmresolv/internal/logger"
 )
 
-type Filter struct {
-	mu      sync.RWMutex
+type filterState struct {
 	domains map[string]bool
-	inline  map[string]bool
 	mode    string
+}
+
+type Filter struct {
+	state  atomic.Pointer[filterState]
+	wmu    sync.Mutex
+	inline map[string]bool
 }
 
 func NewFilter(cfg *config.Config) *Filter {
 	f := &Filter{
-		domains: make(map[string]bool),
-		inline:  make(map[string]bool),
-		mode:    strings.ToLower(cfg.Filtering.Mode),
+		inline: make(map[string]bool),
 	}
-	if f.mode == "off" {
-		return f
-	}
+	mode := strings.ToLower(cfg.Filtering.Mode)
+	domains := make(map[string]bool)
 
-	for _, d := range cfg.Filtering.Inline {
-		d = strings.ToLower(strings.TrimSpace(d))
-		f.domains[d] = true
-		f.inline[d] = true
-	}
-
-	for _, source := range cfg.Filtering.Lists {
-		if err := f.loadList(source); err != nil {
-			logger.LogWarn("failed to load filter list %s: %v", source, err)
+	if mode != "off" {
+		for _, d := range cfg.Filtering.Inline {
+			d = strings.ToLower(strings.TrimSpace(d))
+			domains[d] = true
+			f.inline[d] = true
 		}
+		for _, source := range cfg.Filtering.Lists {
+			if err := loadListFromSource(source, domains); err != nil {
+				logger.LogWarn("failed to load filter list %s: %v", source, err)
+			}
+		}
+		logger.LogInfo("filter loaded: mode=%s domains=%d", mode, len(domains))
 	}
 
-	logger.LogInfo("filter loaded: mode=%s domains=%d", f.mode, len(f.domains))
+	f.state.Store(&filterState{domains: domains, mode: mode})
 	return f
 }
 
 func (f *Filter) Blocked(name string) bool {
-	if f.mode == "off" {
+	st := f.state.Load()
+	if st.mode == "off" {
 		return false
 	}
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
-
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-
 	for {
-		if f.domains[name] {
-			if f.mode == "blacklist" {
-				return true
-			}
-			return false
+		if st.domains[name] {
+			return st.mode == "blacklist"
 		}
 		idx := strings.Index(name, ".")
 		if idx == -1 {
@@ -67,32 +65,45 @@ func (f *Filter) Blocked(name string) bool {
 		}
 		name = name[idx+1:]
 	}
-
-	if f.mode == "whitelist" {
-		return true
-	}
-	return false
+	return st.mode == "whitelist"
 }
 
 func (f *Filter) Add(domain string) {
 	d := strings.ToLower(strings.TrimSpace(domain))
-	f.mu.Lock()
-	f.domains[d] = true
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	cur := f.state.Load()
+	next := copyDomains(cur.domains)
+	next[d] = true
 	f.inline[d] = true
-	f.mu.Unlock()
+	f.state.Store(&filterState{domains: next, mode: cur.mode})
 }
 
 func (f *Filter) Remove(domain string) {
 	d := strings.ToLower(strings.TrimSpace(domain))
-	f.mu.Lock()
-	delete(f.domains, d)
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	cur := f.state.Load()
+	next := copyDomains(cur.domains)
+	delete(next, d)
 	delete(f.inline, d)
-	f.mu.Unlock()
+	f.state.Store(&filterState{domains: next, mode: cur.mode})
+}
+
+func (f *Filter) SetMode(mode string) {
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	cur := f.state.Load()
+	f.state.Store(&filterState{domains: cur.domains, mode: strings.ToLower(mode)})
+}
+
+func (f *Filter) Size() int {
+	return len(f.state.Load().domains)
 }
 
 func (f *Filter) InlineDomains() []string {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
 	out := make([]string, 0, len(f.inline))
 	for d := range f.inline {
 		out = append(out, d)
@@ -101,48 +112,44 @@ func (f *Filter) InlineDomains() []string {
 	return out
 }
 
-func (f *Filter) SetMode(mode string) {
-	f.mu.Lock()
-	f.mode = strings.ToLower(mode)
-	f.mu.Unlock()
-}
-
-func (f *Filter) Size() int {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return len(f.domains)
-}
-
-func (f *Filter) loadList(source string) error {
-	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
-		return f.loadURL(source)
+func copyDomains(m map[string]bool) map[string]bool {
+	c := make(map[string]bool, len(m))
+	for k, v := range m {
+		c[k] = v
 	}
-	return f.loadFile(source)
+	return c
 }
 
-func (f *Filter) loadURL(url string) error {
+func loadListFromSource(source string, domains map[string]bool) error {
+	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+		return loadFromURL(source, domains)
+	}
+	return loadFromFile(source, domains)
+}
+
+func loadFromURL(url string, domains map[string]bool) error {
 	logger.LogInfo("fetching filter list: %s", url)
 	resp, err := http.Get(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	f.parseList(bufio.NewScanner(resp.Body))
+	parseList(bufio.NewScanner(resp.Body), domains)
 	return nil
 }
 
-func (f *Filter) loadFile(path string) error {
+func loadFromFile(path string, domains map[string]bool) error {
 	logger.LogInfo("loading filter list: %s", path)
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	f.parseList(bufio.NewScanner(file))
+	parseList(bufio.NewScanner(file), domains)
 	return nil
 }
 
-func (f *Filter) parseList(scanner *bufio.Scanner) {
+func parseList(scanner *bufio.Scanner, domains map[string]bool) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -154,11 +161,11 @@ func (f *Filter) parseList(scanner *bufio.Scanner) {
 		fields := strings.Fields(line)
 		switch len(fields) {
 		case 1:
-			f.domains[strings.ToLower(fields[0])] = true
+			domains[strings.ToLower(fields[0])] = true
 		case 2:
 			domain := strings.ToLower(fields[1])
 			if domain != "localhost" && domain != "localhost.localdomain" {
-				f.domains[domain] = true
+				domains[domain] = true
 			}
 		}
 	}

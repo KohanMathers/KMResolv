@@ -174,81 +174,69 @@ func TestSize(t *testing.T) {
 }
 
 func TestParseListSingleField(t *testing.T) {
-	f := &Filter{
-		domains: make(map[string]bool),
-		inline:  make(map[string]bool),
-		mode:    "blacklist",
-	}
+	domains := make(map[string]bool)
 	path := writeList(t, `# comment
 ads.com
 tracker.net
 # another comment
 malware.org
 `)
-	f.loadFile(path)
-
+	if err := loadFromFile(path, domains); err != nil {
+		t.Fatalf("loadFromFile: %v", err)
+	}
 	for _, d := range []string{"ads.com", "tracker.net", "malware.org"} {
-		if !f.domains[d] {
+		if !domains[d] {
 			t.Errorf("domain %q should be loaded from single-field list", d)
 		}
 	}
 }
 
 func TestParseListTwoField(t *testing.T) {
-	f := &Filter{
-		domains: make(map[string]bool),
-		inline:  make(map[string]bool),
-		mode:    "blacklist",
-	}
+	domains := make(map[string]bool)
 	path := writeList(t, `0.0.0.0 ads.com
 127.0.0.1 localhost
 0.0.0.0 tracker.net
 0.0.0.0 localhost.localdomain
 `)
-	f.loadFile(path)
-
-	if !f.domains["ads.com"] {
+	if err := loadFromFile(path, domains); err != nil {
+		t.Fatalf("loadFromFile: %v", err)
+	}
+	if !domains["ads.com"] {
 		t.Error("ads.com should be loaded from hosts-style list")
 	}
-	if !f.domains["tracker.net"] {
+	if !domains["tracker.net"] {
 		t.Error("tracker.net should be loaded from hosts-style list")
 	}
-	if f.domains["localhost"] {
+	if domains["localhost"] {
 		t.Error("localhost should be filtered out")
 	}
-	if f.domains["localhost.localdomain"] {
+	if domains["localhost.localdomain"] {
 		t.Error("localhost.localdomain should be filtered out")
 	}
 }
 
 func TestParseListInlineComment(t *testing.T) {
-	f := &Filter{
-		domains: make(map[string]bool),
-		inline:  make(map[string]bool),
-		mode:    "blacklist",
-	}
+	domains := make(map[string]bool)
 	path := writeList(t, "ads.com # this is a comment\n")
-	f.loadFile(path)
-
-	if !f.domains["ads.com"] {
+	if err := loadFromFile(path, domains); err != nil {
+		t.Fatalf("loadFromFile: %v", err)
+	}
+	if !domains["ads.com"] {
 		t.Error("inline comment should be stripped, domain should be loaded")
 	}
 }
 
 func TestParseListEmptyLines(t *testing.T) {
-	f := &Filter{
-		domains: make(map[string]bool),
-		inline:  make(map[string]bool),
-		mode:    "blacklist",
-	}
+	domains := make(map[string]bool)
 	path := writeList(t, "\n\n   \nads.com\n\n")
-	f.loadFile(path)
-
-	if !f.domains["ads.com"] {
+	if err := loadFromFile(path, domains); err != nil {
+		t.Fatalf("loadFromFile: %v", err)
+	}
+	if !domains["ads.com"] {
 		t.Error("empty lines should be skipped and valid domains loaded")
 	}
-	if len(f.domains) != 1 {
-		t.Errorf("expected 1 domain, got %d", len(f.domains))
+	if len(domains) != 1 {
+		t.Errorf("expected 1 domain, got %d", len(domains))
 	}
 }
 
