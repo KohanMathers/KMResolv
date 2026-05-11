@@ -2,6 +2,7 @@ package cache
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kohanmathers/kmresolv/internal/config"
@@ -12,9 +13,10 @@ import (
 type PrefetchFn func(name string, qtype uint16) (*dns.Message, error)
 
 type cacheEntry struct {
-	msg     *dns.Message
-	expires time.Time
-	cached  time.Time
+	msg         *dns.Message
+	expires     time.Time
+	cached      time.Time
+	prefetching atomic.Bool
 }
 
 type negEntry struct {
@@ -104,9 +106,10 @@ func (c *Cache) Get(name string, qtype uint16, cfg *config.Config) *dns.Message 
 	if cfg.Resolver.Cache.Prefetch && c.prefetchFn != nil {
 		total := e.expires.Sub(e.cached)
 		remaining := time.Until(e.expires)
-		if remaining < total/10 {
+		if remaining < total/10 && e.prefetching.CompareAndSwap(false, true) {
 			pf := c.prefetchFn
 			go func() {
+				defer e.prefetching.Store(false)
 				logger.LogDebug("prefetching: %s", name)
 				if msg, err := pf(name, qtype); err == nil {
 					c.Set(name, qtype, msg)
