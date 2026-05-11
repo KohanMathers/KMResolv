@@ -287,6 +287,17 @@ func parseCNAME(m *dns.Message, rr dns.RR) (string, error) {
 	return name, err
 }
 
+func (s *Server) resolveNSAddr(ns string, qtype uint16, depth int) (*dns.Message, error) {
+	if s.cache.IsNegative(ns, qtype) {
+		return nil, fmt.Errorf("NXDOMAIN: %s does not exist", ns)
+	}
+	if cached := s.cache.Get(ns, qtype, s.cfg); cached != nil {
+		logger.LogDebug("NS addr cache hit: %s", ns)
+		return cached, nil
+	}
+	return s.resolveAt(ns, qtype, RootServers, depth+1)
+}
+
 func (s *Server) resolveNSParallel(nsNames []string, depth int) ([]string, error) {
 	type result struct {
 		ips []string
@@ -299,7 +310,7 @@ func (s *Server) resolveNSParallel(nsNames []string, depth int) ([]string, error
 		ns := ns
 		go func() {
 			var ips []string
-			if r, err := s.resolveAt(ns, dns.TypeA, RootServers, depth+1); err != nil {
+			if r, err := s.resolveNSAddr(ns, dns.TypeA, depth); err != nil {
 				logger.LogDebug("parallel NS resolve A failed for %s: %v", ns, err)
 			} else {
 				for _, rr := range r.Answers {
@@ -311,7 +322,7 @@ func (s *Server) resolveNSParallel(nsNames []string, depth int) ([]string, error
 				}
 			}
 			if len(ips) == 0 {
-				if r, err := s.resolveAt(ns, dns.TypeAAAA, RootServers, depth+1); err != nil {
+				if r, err := s.resolveNSAddr(ns, dns.TypeAAAA, depth); err != nil {
 					logger.LogDebug("parallel NS resolve AAAA failed for %s: %v", ns, err)
 				} else {
 					for _, rr := range r.Answers {
