@@ -94,7 +94,7 @@ func defaults() Config {
 		},
 		Resolver: ResolverConfig{
 			Timeout:       3,
-			MaxDepth:      10,
+			MaxDepth:      20,
 			MaxConcurrent: 64,
 			EDNS0:         true,
 			TCPFallback:   true,

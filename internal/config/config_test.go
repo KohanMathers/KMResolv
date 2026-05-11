@@ -22,8 +22,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.Resolver.Timeout != 3 {
 		t.Errorf("timeout = %d, want 3", cfg.Resolver.Timeout)
 	}
-	if cfg.Resolver.MaxDepth != 10 {
-		t.Errorf("max_depth = %d, want 10", cfg.Resolver.MaxDepth)
+	if cfg.Resolver.MaxDepth != 20 {
+		t.Errorf("max_depth = %d, want 20", cfg.Resolver.MaxDepth)
 	}
 	if !cfg.Resolver.EDNS0 {
 		t.Error("edns0 should default to true")

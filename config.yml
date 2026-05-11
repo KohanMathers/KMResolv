@@ -19,7 +19,7 @@ server:
 ######################################################################
 resolver:
     timeout: 3
-    max_depth: 10
+    max_depth: 20
     max_concurrent: 64
     edns0: true
     tcp_fallback: true
