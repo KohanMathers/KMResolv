@@ -21,17 +21,37 @@ type negEntry struct {
 	expires time.Time
 }
 
+const numShards = 64
+
+type cacheShard struct {
+	mu       sync.RWMutex
+	entries  map[string]*cacheEntry
+	negative map[string]negEntry
+}
+
 type Cache struct {
-	mu         sync.RWMutex
-	entries    map[string]*cacheEntry
-	negative   map[string]negEntry
+	shards     [numShards]cacheShard
 	prefetchFn PrefetchFn
 }
 
+func shardIdx(key string) uint32 {
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return h & (numShards - 1)
+}
+
+func (c *Cache) shard(key string) *cacheShard {
+	return &c.shards[shardIdx(key)]
+}
+
 func NewCache() *Cache {
-	c := &Cache{
-		entries:  make(map[string]*cacheEntry),
-		negative: make(map[string]negEntry),
+	c := &Cache{}
+	for i := range c.shards {
+		c.shards[i].entries = make(map[string]*cacheEntry)
+		c.shards[i].negative = make(map[string]negEntry)
 	}
 	go c.evictLoop()
 	return c
@@ -45,18 +65,20 @@ func (c *Cache) SetNegative(name string, qtype uint16, ttl int) {
 	if ttl == 0 {
 		ttl = 300
 	}
-	c.mu.Lock()
-	c.negative[cacheKey(name, qtype)] = negEntry{
-		expires: time.Now().Add(time.Duration(ttl) * time.Second),
-	}
-	c.mu.Unlock()
+	key := cacheKey(name, qtype)
+	s := c.shard(key)
+	s.mu.Lock()
+	s.negative[key] = negEntry{expires: time.Now().Add(time.Duration(ttl) * time.Second)}
+	s.mu.Unlock()
 	logger.LogDebug("cache negative: %s TTL=%ds", name, ttl)
 }
 
 func (c *Cache) IsNegative(name string, qtype uint16) bool {
-	c.mu.RLock()
-	e, ok := c.negative[cacheKey(name, qtype)]
-	c.mu.RUnlock()
+	key := cacheKey(name, qtype)
+	s := c.shard(key)
+	s.mu.RLock()
+	e, ok := s.negative[key]
+	s.mu.RUnlock()
 	return ok && time.Now().Before(e.expires)
 }
 
@@ -65,9 +87,11 @@ func cacheKey(name string, qtype uint16) string {
 }
 
 func (c *Cache) Get(name string, qtype uint16, cfg *config.Config) *dns.Message {
-	c.mu.RLock()
-	e, ok := c.entries[cacheKey(name, qtype)]
-	c.mu.RUnlock()
+	key := cacheKey(name, qtype)
+	s := c.shard(key)
+	s.mu.RLock()
+	e, ok := s.entries[key]
+	s.mu.RUnlock()
 	if !ok || time.Now().After(e.expires) {
 		return nil
 	}
@@ -116,13 +140,16 @@ func (c *Cache) Set(name string, qtype uint16, msg *dns.Message) {
 	if ttl == 0 {
 		return
 	}
-	c.mu.Lock()
-	c.entries[cacheKey(name, qtype)] = &cacheEntry{
+	now := time.Now()
+	key := cacheKey(name, qtype)
+	s := c.shard(key)
+	s.mu.Lock()
+	s.entries[key] = &cacheEntry{
 		msg:     msg,
-		expires: time.Now().Add(time.Duration(ttl) * time.Second),
-		cached:  time.Now(),
+		expires: now.Add(time.Duration(ttl) * time.Second),
+		cached:  now,
 	}
-	c.mu.Unlock()
+	s.mu.Unlock()
 }
 
 func lowestTTL(msg *dns.Message) uint32 {
@@ -143,54 +170,68 @@ func (c *Cache) evictLoop() {
 	defer ticker.Stop()
 	for range ticker.C {
 		now := time.Now()
-		c.mu.Lock()
-		for k, e := range c.entries {
-			if now.After(e.expires) {
-				delete(c.entries, k)
+		for i := range c.shards {
+			s := &c.shards[i]
+			s.mu.Lock()
+			for k, e := range s.entries {
+				if now.After(e.expires) {
+					delete(s.entries, k)
+				}
 			}
-		}
-		for k, e := range c.negative {
-			if now.After(e.expires) {
-				delete(c.negative, k)
+			for k, e := range s.negative {
+				if now.After(e.expires) {
+					delete(s.negative, k)
+				}
 			}
+			s.mu.Unlock()
 		}
-		c.mu.Unlock()
 	}
 }
 
 func (c *Cache) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.entries)
+	var total int
+	for i := range c.shards {
+		c.shards[i].mu.RLock()
+		total += len(c.shards[i].entries)
+		c.shards[i].mu.RUnlock()
+	}
+	return total
 }
 
 func (c *Cache) NegativeSize() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.negative)
+	var total int
+	for i := range c.shards {
+		c.shards[i].mu.RLock()
+		total += len(c.shards[i].negative)
+		c.shards[i].mu.RUnlock()
+	}
+	return total
 }
 
 func (c *Cache) Flush(mode string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	switch mode {
-	case "negative":
-		c.negative = make(map[string]negEntry)
-	case "expired":
-		now := time.Now()
-		for k, e := range c.entries {
-			if now.After(e.expires) {
-				delete(c.entries, k)
+	for i := range c.shards {
+		s := &c.shards[i]
+		s.mu.Lock()
+		switch mode {
+		case "negative":
+			s.negative = make(map[string]negEntry)
+		case "expired":
+			now := time.Now()
+			for k, e := range s.entries {
+				if now.After(e.expires) {
+					delete(s.entries, k)
+				}
 			}
-		}
-		for k, e := range c.negative {
-			if now.After(e.expires) {
-				delete(c.negative, k)
+			for k, e := range s.negative {
+				if now.After(e.expires) {
+					delete(s.negative, k)
+				}
 			}
+		default:
+			s.entries = make(map[string]*cacheEntry)
+			s.negative = make(map[string]negEntry)
 		}
-	default:
-		c.entries = make(map[string]*cacheEntry)
-		c.negative = make(map[string]negEntry)
+		s.mu.Unlock()
 	}
 	logger.LogInfo("cache flushed: mode=%s", mode)
 }

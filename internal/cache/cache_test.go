@@ -82,13 +82,14 @@ func TestTTLDecrement(t *testing.T) {
 	key := cacheKey("example.com", dns.TypeA)
 	elapsed := 10 * time.Second
 
-	c.mu.Lock()
-	c.entries[key] = &cacheEntry{
+	s := &c.shards[shardIdx(key)]
+	s.mu.Lock()
+	s.entries[key] = &cacheEntry{
 		msg:     makeMsg(original),
 		expires: time.Now().Add(time.Duration(original)*time.Second - elapsed),
 		cached:  time.Now().Add(-elapsed),
 	}
-	c.mu.Unlock()
+	s.mu.Unlock()
 
 	got := c.Get("example.com", dns.TypeA, cfg)
 	if got == nil {
@@ -146,9 +147,11 @@ func TestNegativeCacheDefaultTTL(t *testing.T) {
 func TestNegativeCacheExpiredEntry(t *testing.T) {
 	c := NewCache()
 
-	c.mu.Lock()
-	c.negative[cacheKey("old.com", dns.TypeA)] = negEntry{expires: time.Now().Add(-1 * time.Second)}
-	c.mu.Unlock()
+	negKey := cacheKey("old.com", dns.TypeA)
+	s := &c.shards[shardIdx(negKey)]
+	s.mu.Lock()
+	s.negative[negKey] = negEntry{expires: time.Now().Add(-1 * time.Second)}
+	s.mu.Unlock()
 
 	if c.IsNegative("old.com", dns.TypeA) {
 		t.Error("expired negative entry should not be returned as negative")
@@ -190,13 +193,14 @@ func TestFlushExpired(t *testing.T) {
 	c.Set("live.com", dns.TypeA, makeMsg(3600))
 
 	expKey := cacheKey("expired.com", dns.TypeA)
-	c.mu.Lock()
-	c.entries[expKey] = &cacheEntry{
+	expShard := &c.shards[shardIdx(expKey)]
+	expShard.mu.Lock()
+	expShard.entries[expKey] = &cacheEntry{
 		msg:     makeMsg(1),
 		expires: time.Now().Add(-1 * time.Second),
 		cached:  time.Now().Add(-2 * time.Second),
 	}
-	c.mu.Unlock()
+	expShard.mu.Unlock()
 
 	if c.Size() != 2 {
 		t.Fatalf("expected 2 entries before flush, got %d", c.Size())
@@ -221,13 +225,14 @@ func TestPrefetchTrigger(t *testing.T) {
 
 	key := cacheKey("prefetch.com", dns.TypeA)
 	now := time.Now()
-	c.mu.Lock()
-	c.entries[key] = &cacheEntry{
+	ps := &c.shards[shardIdx(key)]
+	ps.mu.Lock()
+	ps.entries[key] = &cacheEntry{
 		msg:     makeMsg(100),
 		expires: now.Add(4 * time.Second),
 		cached:  now.Add(-96 * time.Second),
 	}
-	c.mu.Unlock()
+	ps.mu.Unlock()
 
 	got := c.Get("prefetch.com", dns.TypeA, cfg)
 	if got == nil {
