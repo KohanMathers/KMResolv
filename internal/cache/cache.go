@@ -127,6 +127,9 @@ func (c *Cache) Get(name string, qtype uint16, cfg *config.Config) *dns.Message 
 
 func cloneMessageWithDecrementedTTL(msg *dns.Message, elapsed uint32) *dns.Message {
 	clone := *msg
+	if elapsed == 0 {
+		return &clone
+	}
 	clone.Answers = decrementRRs(msg.Answers, elapsed)
 	clone.Authority = decrementRRs(msg.Authority, elapsed)
 	clone.Additional = decrementRRs(msg.Additional, elapsed)

@@ -535,29 +535,6 @@ func TestResolveViaForwarderNXDomain(t *testing.T) {
 
 // ---- semaphore / max concurrent ----
 
-func TestMaxConcurrentLimitExceeded(t *testing.T) {
-	cfg := &config.Config{
-		Resolver: config.ResolverConfig{
-			Timeout:       3,
-			MaxDepth:      10,
-			MaxConcurrent: 1,
-			Cache:         config.CacheConfig{NegativeTTL: 300},
-		},
-		Filtering: config.FilterConfig{Mode: "off"},
-	}
-	s := New(cfg)
-	s.sem <- struct{}{} // occupy the only slot
-
-	_, err := s.resolve("busy.test", dns.TypeA)
-	if err == nil {
-		t.Fatal("expected error when semaphore is full")
-	}
-	if strings.Contains(err.Error(), "NXDOMAIN") {
-		t.Error("over-limit error must not look like NXDOMAIN (would poison negative cache)")
-	}
-	<-s.sem
-}
-
 func TestMaxConcurrentZeroMeansUnlimited(t *testing.T) {
 	cfg := &config.Config{
 		Resolver: config.ResolverConfig{

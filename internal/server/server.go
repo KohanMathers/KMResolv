@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -72,8 +73,6 @@ func New(cfg *config.Config) *Server {
 	return s
 }
 
-const numReaders = 4
-
 func (s *Server) Start() error {
 	conn, err := net.ListenPacket("udp", s.cfg.Addr())
 	if err != nil {
@@ -82,6 +81,7 @@ func (s *Server) Start() error {
 	defer conn.Close()
 	logger.LogInfo("listening on %s", s.cfg.Addr())
 
+	numReaders := runtime.NumCPU()
 	done := make(chan error, numReaders)
 	for range numReaders {
 		go func() {
@@ -162,8 +162,7 @@ func (s *Server) handleQuery(conn net.PacketConn, src net.Addr, raw []byte) {
 		return
 	}
 
-	wasCached := s.cache.Get(q.Name, q.Type, s.cfg) != nil
-	resp, resolveErr := s.resolve(q.Name, q.Type)
+	resp, wasCached, resolveErr := s.resolve(q.Name, q.Type)
 
 	latency := time.Since(start).Milliseconds()
 	s.statTotalLatencyMs.Add(uint64(latency))

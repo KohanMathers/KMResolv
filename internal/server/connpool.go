@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const poolSizePerServer = 4
+const poolSizePerServer = 16
 
 type udpPool struct {
 	mu    sync.Mutex

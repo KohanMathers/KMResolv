@@ -43,14 +43,14 @@ var RootServers = []string{
 
 const udpBufSize = 4096
 
-func (s *Server) resolve(name string, qtype uint16) (*dns.Message, error) {
+func (s *Server) resolve(name string, qtype uint16) (*dns.Message, bool, error) {
 	if s.cache.IsNegative(name, qtype) {
 		logger.LogDebug("negative cache hit: %s", name)
-		return nil, fmt.Errorf("NXDOMAIN: %s does not exist", name)
+		return nil, false, fmt.Errorf("NXDOMAIN: %s does not exist", name)
 	}
 	if msg := s.cache.Get(name, qtype, s.cfg); msg != nil {
 		logger.LogDebug("cache hit: %s", name)
-		return msg, nil
+		return msg, true, nil
 	}
 
 	key := inflightKey(name, qtype)
@@ -58,7 +58,7 @@ func (s *Server) resolve(name string, qtype uint16) (*dns.Message, error) {
 	if actual, loaded := s.inflight.LoadOrStore(key, call); loaded {
 		existing := actual.(*inflightCall)
 		<-existing.done
-		return existing.msg, existing.err
+		return existing.msg, false, existing.err
 	}
 
 	defer func() {
@@ -67,13 +67,8 @@ func (s *Server) resolve(name string, qtype uint16) (*dns.Message, error) {
 	}()
 
 	if s.sem != nil {
-		select {
-		case s.sem <- struct{}{}:
-			defer func() { <-s.sem }()
-		default:
-			call.err = fmt.Errorf("too many concurrent upstream queries")
-			return nil, call.err
-		}
+		s.sem <- struct{}{}
+		defer func() { <-s.sem }()
 	}
 
 	var msg *dns.Message
@@ -94,11 +89,11 @@ func (s *Server) resolve(name string, qtype uint16) (*dns.Message, error) {
 			s.cache.SetNegative(name, qtype, s.cfg.Resolver.Cache.NegativeTTL)
 		}
 		call.err = err
-		return nil, err
+		return nil, false, err
 	}
 	s.cache.Set(name, qtype, msg)
 	call.msg = msg
-	return msg, nil
+	return msg, false, nil
 }
 
 func forwarderAddr(server string) string {
@@ -255,14 +250,17 @@ func (s *Server) buildQuery(name string, qtype uint16) *dns.Message {
 }
 
 func (s *Server) query(server, name string, qtype uint16) (*dns.Message, error) {
-	timeout := time.Duration(s.cfg.Resolver.Timeout) * time.Second
-	conn, err := s.pool.get(server, timeout)
+	fullTimeout := time.Duration(s.cfg.Resolver.Timeout) * time.Second
+	timeout := fullTimeout
+	if ms := s.cfg.Resolver.AttemptTimeoutMs; ms > 0 {
+		timeout = min(time.Duration(ms)*time.Millisecond, fullTimeout)
+	}
+	conn, err := net.DialTimeout("udp", server, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
-
-	failed := true
-	defer func() { s.pool.put(server, conn, failed) }()
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(timeout))
 
 	req := s.buildQuery(name, qtype)
 	packed, err := req.Pack()
@@ -287,20 +285,16 @@ func (s *Server) query(server, name string, qtype uint16) (*dns.Message, error) 
 		return nil, fmt.Errorf("response ID mismatch: got %d want %d", resp.ID, req.ID)
 	}
 	if resp.Rcode() == dns.RcodeNXDomain {
-		failed = false
 		return nil, fmt.Errorf("NXDOMAIN: %s does not exist", name)
 	}
 	if resp.Rcode() != dns.RcodeNoError {
-		failed = false
 		return nil, fmt.Errorf("rcode %d from %s", resp.Rcode(), server)
 	}
 	if resp.Flags&0x0200 != 0 && s.cfg.Resolver.TCPFallback {
-		failed = false
 		logger.LogDebug("response truncated, retrying over TCP: %s", server)
 		return s.queryTCP(server, name, qtype)
 	}
 
-	failed = false
 	return resp, nil
 }
 

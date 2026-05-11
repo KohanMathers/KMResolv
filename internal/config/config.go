@@ -26,13 +26,14 @@ type ServerConfig struct {
 }
 
 type ResolverConfig struct {
-	Timeout       int             `yaml:"timeout"`
-	MaxDepth      int             `yaml:"max_depth"`
-	MaxConcurrent int             `yaml:"max_concurrent"`
-	EDNS0         bool            `yaml:"edns0"`
-	TCPFallback   bool            `yaml:"tcp_fallback"`
-	Cache         CacheConfig     `yaml:"cache"`
-	Forwarder     ForwarderConfig `yaml:"forwarder"`
+	Timeout          int             `yaml:"timeout"`
+	AttemptTimeoutMs int             `yaml:"attempt_timeout_ms"`
+	MaxDepth         int             `yaml:"max_depth"`
+	MaxConcurrent    int             `yaml:"max_concurrent"`
+	EDNS0            bool            `yaml:"edns0"`
+	TCPFallback      bool            `yaml:"tcp_fallback"`
+	Cache            CacheConfig     `yaml:"cache"`
+	Forwarder        ForwarderConfig `yaml:"forwarder"`
 }
 
 type ForwarderConfig struct {
@@ -93,11 +94,12 @@ func defaults() Config {
 			LogLevel: "info",
 		},
 		Resolver: ResolverConfig{
-			Timeout:       3,
-			MaxDepth:      20,
-			MaxConcurrent: 64,
-			EDNS0:         true,
-			TCPFallback:   true,
+			Timeout:          3,
+			AttemptTimeoutMs: 800,
+			MaxDepth:         20,
+			MaxConcurrent:    64,
+			EDNS0:            true,
+			TCPFallback:      true,
 			Cache: CacheConfig{
 				Enabled:     true,
 				NegativeTTL: 300,
