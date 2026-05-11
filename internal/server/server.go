@@ -22,6 +22,7 @@ type Server struct {
 	filter   *filter.Filter
 	records  *records.RecordStore
 	qlog     *QueryLog
+	pool     *udpPool
 	inflight sync.Map
 
 	statTotalQueries   atomic.Uint64
@@ -41,6 +42,7 @@ func New(cfg *config.Config) *Server {
 		records:   records.NewRecordStore(cfg),
 		qlog:      &QueryLog{max: 500},
 		cache:     cache.NewCache(),
+		pool:      newUDPPool(),
 		startTime: time.Now(),
 	}
 	if cfg.Minecraft.Enabled {
@@ -57,6 +59,8 @@ func New(cfg *config.Config) *Server {
 	return s
 }
 
+const numReaders = 4
+
 func (s *Server) Start() error {
 	conn, err := net.ListenPacket("udp", s.cfg.Addr())
 	if err != nil {
@@ -65,17 +69,23 @@ func (s *Server) Start() error {
 	defer conn.Close()
 	logger.LogInfo("listening on %s", s.cfg.Addr())
 
-	buf := make([]byte, udpBufSize)
-	for {
-		n, src, err := conn.ReadFrom(buf)
-		if err != nil {
-			logger.LogError("read error: %v", err)
-			continue
-		}
-		raw := make([]byte, n)
-		copy(raw, buf[:n])
-		go s.handleQuery(conn, src, raw)
+	done := make(chan error, numReaders)
+	for range numReaders {
+		go func() {
+			buf := make([]byte, udpBufSize)
+			for {
+				n, src, err := conn.ReadFrom(buf)
+				if err != nil {
+					done <- err
+					return
+				}
+				raw := make([]byte, n)
+				copy(raw, buf[:n])
+				go s.handleQuery(conn, src, raw)
+			}
+		}()
 	}
+	return fmt.Errorf("listener exited: %w", <-done)
 }
 
 func (s *Server) handleQuery(conn net.PacketConn, src net.Addr, raw []byte) {
