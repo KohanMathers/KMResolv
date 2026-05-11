@@ -107,6 +107,13 @@ func (s *Server) resolveAt(name string, qtype uint16, servers []string, depth in
 							return nil, fmt.Errorf("cname parse: %w", err)
 						}
 						logger.LogDebug("following CNAME %s → %s", name, target)
+						if s.cache.IsNegative(target, qtype) {
+							return nil, fmt.Errorf("NXDOMAIN: %s does not exist", target)
+						}
+						if cached := s.cache.Get(target, qtype, s.cfg); cached != nil {
+							logger.LogDebug("CNAME target cache hit: %s", target)
+							return cached, nil
+						}
 						return s.resolveAt(target, qtype, RootServers, depth+1)
 					}
 				}
