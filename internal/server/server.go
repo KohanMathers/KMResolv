@@ -25,6 +25,7 @@ type Server struct {
 	pool     *udpPool
 	rawPool  sync.Pool
 	inflight sync.Map
+	sem      chan struct{}
 
 	statTotalQueries   atomic.Uint64
 	statCacheHits      atomic.Uint64
@@ -54,6 +55,9 @@ func New(cfg *config.Config) *Server {
 		}
 		apiURL := fmt.Sprintf("http://%s:%d", host, cfg.Dashboard.Port)
 		s.minecraft = NewMinecraftServer(&cfg.Minecraft, apiURL)
+	}
+	if cfg.Resolver.MaxConcurrent > 0 {
+		s.sem = make(chan struct{}, cfg.Resolver.MaxConcurrent)
 	}
 	s.cache.SetMinTTL(uint32(cfg.Resolver.Cache.MinTTL))
 	s.cache.SetPrefetchFn(func(name string, qtype uint16) (*dns.Message, error) {

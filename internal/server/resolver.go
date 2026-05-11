@@ -66,6 +66,16 @@ func (s *Server) resolve(name string, qtype uint16) (*dns.Message, error) {
 		close(call.done)
 	}()
 
+	if s.sem != nil {
+		select {
+		case s.sem <- struct{}{}:
+			defer func() { <-s.sem }()
+		default:
+			call.err = fmt.Errorf("too many concurrent upstream queries")
+			return nil, call.err
+		}
+	}
+
 	var msg *dns.Message
 	var err error
 

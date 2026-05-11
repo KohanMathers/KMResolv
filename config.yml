@@ -6,6 +6,8 @@ server:
 resolver:
     timeout: 3
     max_depth: 10
+    # Maximum simultaneous upstream resolutions. 0 = unlimited.
+    max_concurrent: 64
     edns0: true
     tcp_fallback: true
     cache:
