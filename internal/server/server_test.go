@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -439,5 +440,104 @@ func TestHandleQueryResponseID(t *testing.T) {
 	}
 	if resp.ID != 0xDEAD {
 		t.Errorf("response ID = %#x, want 0xDEAD", resp.ID)
+	}
+}
+
+// ---- forwarder mode ----
+
+func startFakeUpstream(t *testing.T, rcode uint16, answers []dns.RR) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fake upstream: %v", err)
+	}
+	t.Cleanup(func() { pc.Close() })
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			req, err := dns.ParseMessage(buf[:n])
+			if err != nil {
+				continue
+			}
+			resp := &dns.Message{}
+			resp.ID = req.ID
+			resp.SetQR(true)
+			resp.SetRcode(rcode)
+			resp.Questions = req.Questions
+			resp.Answers = answers
+			packed, _ := resp.Pack()
+			pc.WriteTo(packed, addr)
+		}
+	}()
+	return pc.LocalAddr().String()
+}
+
+func TestResolveViaForwarderSuccess(t *testing.T) {
+	addr := startFakeUpstream(t, dns.RcodeNoError, []dns.RR{
+		{Name: "fw.test", Type: dns.TypeA, Class: dns.ClassIN, TTL: 300, Data: []byte{5, 6, 7, 8}},
+	})
+
+	cfg := &config.Config{
+		Resolver: config.ResolverConfig{
+			Timeout:  3,
+			MaxDepth: 10,
+			Cache:    config.CacheConfig{NegativeTTL: 300},
+			Forwarder: config.ForwarderConfig{
+				Enabled: true,
+				Servers: []string{addr},
+			},
+		},
+		Filtering: config.FilterConfig{Mode: "off"},
+	}
+	s := New(cfg)
+
+	msg, err := s.resolveViaForwarder("fw.test", dns.TypeA)
+	if err != nil {
+		t.Fatalf("resolveViaForwarder: %v", err)
+	}
+	if len(msg.Answers) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(msg.Answers))
+	}
+	if !net.IP(msg.Answers[0].Data).Equal(net.IP{5, 6, 7, 8}) {
+		t.Errorf("unexpected answer data: %v", msg.Answers[0].Data)
+	}
+}
+
+func TestResolveViaForwarderNXDomain(t *testing.T) {
+	addr := startFakeUpstream(t, dns.RcodeNXDomain, nil)
+
+	cfg := &config.Config{
+		Resolver: config.ResolverConfig{
+			Timeout:  3,
+			MaxDepth: 10,
+			Cache:    config.CacheConfig{NegativeTTL: 300},
+			Forwarder: config.ForwarderConfig{
+				Enabled: true,
+				Servers: []string{addr},
+			},
+		},
+		Filtering: config.FilterConfig{Mode: "off"},
+	}
+	s := New(cfg)
+
+	_, err := s.resolveViaForwarder("nx.test", dns.TypeA)
+	if err == nil {
+		t.Fatal("expected NXDOMAIN error, got nil")
+	}
+	if !strings.Contains(err.Error(), "NXDOMAIN") {
+		t.Errorf("expected NXDOMAIN in error, got: %v", err)
+	}
+}
+
+func TestForwarderAddrWithPort(t *testing.T) {
+	if got := forwarderAddr("1.1.1.1:5353"); got != "1.1.1.1:5353" {
+		t.Errorf("expected addr with port preserved, got %s", got)
+	}
+	if got := forwarderAddr("8.8.8.8"); got != "8.8.8.8:53" {
+		t.Errorf("expected :53 appended, got %s", got)
 	}
 }

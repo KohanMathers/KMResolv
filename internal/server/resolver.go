@@ -66,7 +66,19 @@ func (s *Server) resolve(name string, qtype uint16) (*dns.Message, error) {
 		close(call.done)
 	}()
 
-	msg, err := s.resolveAt(name, qtype, RootServers, 0)
+	var msg *dns.Message
+	var err error
+
+	if s.cfg.Resolver.Forwarder.Enabled {
+		msg, err = s.resolveViaForwarder(name, qtype)
+		if err != nil && s.cfg.Resolver.Forwarder.FallbackToIterative {
+			logger.LogDebug("forwarder failed, falling back to iterative: %s (%v)", name, err)
+			msg, err = s.resolveAt(name, qtype, RootServers, 0)
+		}
+	} else {
+		msg, err = s.resolveAt(name, qtype, RootServers, 0)
+	}
+
 	if err != nil {
 		if strings.Contains(err.Error(), "NXDOMAIN") {
 			s.cache.SetNegative(name, qtype, s.cfg.Resolver.Cache.NegativeTTL)
@@ -77,6 +89,76 @@ func (s *Server) resolve(name string, qtype uint16) (*dns.Message, error) {
 	s.cache.Set(name, qtype, msg)
 	call.msg = msg
 	return msg, nil
+}
+
+func forwarderAddr(server string) string {
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server
+	}
+	return server + ":53"
+}
+
+func (s *Server) resolveViaForwarder(name string, qtype uint16) (*dns.Message, error) {
+	timeout := time.Duration(s.cfg.Resolver.Timeout) * time.Second
+	for _, upstream := range s.cfg.Resolver.Forwarder.Servers {
+		server := forwarderAddr(upstream)
+		msg, err := s.queryForwarder(server, name, qtype, timeout)
+		if err != nil {
+			logger.LogDebug("forwarder %s failed for %s: %v", server, name, err)
+			if strings.Contains(err.Error(), "NXDOMAIN") {
+				return nil, err
+			}
+			continue
+		}
+		return msg, nil
+	}
+	return nil, fmt.Errorf("all forwarders failed for %s", name)
+}
+
+func (s *Server) queryForwarder(server, name string, qtype uint16, timeout time.Duration) (*dns.Message, error) {
+	conn, err := s.pool.get(server, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	failed := true
+	defer func() { s.pool.put(server, conn, failed) }()
+
+	req := s.buildQuery(name, qtype)
+	req.SetRD(true)
+	packed, err := req.Pack()
+	if err != nil {
+		return nil, fmt.Errorf("pack: %w", err)
+	}
+	if _, err := conn.Write(packed); err != nil {
+		return nil, fmt.Errorf("write: %w", err)
+	}
+
+	buf := make([]byte, udpBufSize)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return nil, fmt.Errorf("read: %w", err)
+	}
+	resp, err := dns.ParseMessage(buf[:n])
+	if err != nil {
+		return nil, fmt.Errorf("parse: %w", err)
+	}
+	if resp.ID != req.ID {
+		return nil, fmt.Errorf("ID mismatch: got %d want %d", resp.ID, req.ID)
+	}
+	if resp.Rcode() == dns.RcodeNXDomain {
+		failed = false
+		return nil, fmt.Errorf("NXDOMAIN: %s does not exist", name)
+	}
+	if resp.Rcode() != dns.RcodeNoError {
+		failed = false
+		return nil, fmt.Errorf("rcode %d from forwarder %s", resp.Rcode(), server)
+	}
+	if resp.Flags&0x0200 != 0 && s.cfg.Resolver.TCPFallback {
+		failed = false
+		return s.queryTCP(server, name, qtype)
+	}
+	failed = false
+	return resp, nil
 }
 
 func (s *Server) resolveAt(name string, qtype uint16, servers []string, depth int) (*dns.Message, error) {

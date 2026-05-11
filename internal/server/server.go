@@ -57,6 +57,12 @@ func New(cfg *config.Config) *Server {
 	}
 	s.cache.SetMinTTL(uint32(cfg.Resolver.Cache.MinTTL))
 	s.cache.SetPrefetchFn(func(name string, qtype uint16) (*dns.Message, error) {
+		if s.cfg.Resolver.Forwarder.Enabled {
+			msg, err := s.resolveViaForwarder(name, qtype)
+			if err == nil || !s.cfg.Resolver.Forwarder.FallbackToIterative {
+				return msg, err
+			}
+		}
 		return s.resolveAt(name, qtype, RootServers, 0)
 	})
 	return s

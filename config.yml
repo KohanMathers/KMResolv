@@ -13,6 +13,15 @@ resolver:
         negative_ttl: 300
         prefetch: true
         min_ttl: 30
+    forwarder:
+        # Set enabled: true to forward queries to upstream resolvers instead of
+        # iterating from root. Much faster; trades iterative accuracy for speed.
+        enabled: false
+        servers:
+            - 1.1.1.1
+            - 8.8.8.8
+        # If all forwarders fail, fall back to full iterative resolution.
+        fallback_to_iterative: true
 records:
     - name: example.home
       type: A

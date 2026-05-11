@@ -26,11 +26,18 @@ type ServerConfig struct {
 }
 
 type ResolverConfig struct {
-	Timeout     int         `yaml:"timeout"`
-	MaxDepth    int         `yaml:"max_depth"`
-	EDNS0       bool        `yaml:"edns0"`
-	TCPFallback bool        `yaml:"tcp_fallback"`
-	Cache       CacheConfig `yaml:"cache"`
+	Timeout     int             `yaml:"timeout"`
+	MaxDepth    int             `yaml:"max_depth"`
+	EDNS0       bool            `yaml:"edns0"`
+	TCPFallback bool            `yaml:"tcp_fallback"`
+	Cache       CacheConfig     `yaml:"cache"`
+	Forwarder   ForwarderConfig `yaml:"forwarder"`
+}
+
+type ForwarderConfig struct {
+	Enabled             bool     `yaml:"enabled"`
+	Servers             []string `yaml:"servers"`
+	FallbackToIterative bool     `yaml:"fallback_to_iterative"`
 }
 
 type CacheConfig struct {
@@ -94,6 +101,11 @@ func defaults() Config {
 				NegativeTTL: 300,
 				Prefetch:    true,
 				MinTTL:      30,
+			},
+			Forwarder: ForwarderConfig{
+				Enabled:             false,
+				Servers:             []string{"1.1.1.1", "8.8.8.8"},
+				FallbackToIterative: true,
 			},
 		},
 		Filtering: FilterConfig{
