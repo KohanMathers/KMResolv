@@ -32,6 +32,11 @@ type cacheShard struct {
 type Cache struct {
 	shards     [numShards]cacheShard
 	prefetchFn PrefetchFn
+	minTTL     uint32
+}
+
+func (c *Cache) SetMinTTL(n uint32) {
+	c.minTTL = n
 }
 
 func shardIdx(key string) uint32 {
@@ -139,6 +144,9 @@ func (c *Cache) Set(name string, qtype uint16, msg *dns.Message) {
 	ttl := lowestTTL(msg)
 	if ttl == 0 {
 		return
+	}
+	if c.minTTL > 0 && ttl < c.minTTL {
+		ttl = c.minTTL
 	}
 	now := time.Now()
 	key := cacheKey(name, qtype)

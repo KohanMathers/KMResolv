@@ -37,6 +37,7 @@ type CacheConfig struct {
 	Enabled     bool `yaml:"enabled"`
 	NegativeTTL int  `yaml:"negative_ttl"`
 	Prefetch    bool `yaml:"prefetch"`
+	MinTTL      int  `yaml:"min_ttl"`
 }
 
 type RecordConfig struct {
@@ -92,6 +93,7 @@ func defaults() Config {
 				Enabled:     true,
 				NegativeTTL: 300,
 				Prefetch:    true,
+				MinTTL:      30,
 			},
 		},
 		Filtering: FilterConfig{

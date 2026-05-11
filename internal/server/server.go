@@ -53,6 +53,7 @@ func New(cfg *config.Config) *Server {
 		apiURL := fmt.Sprintf("http://%s:%d", host, cfg.Dashboard.Port)
 		s.minecraft = NewMinecraftServer(&cfg.Minecraft, apiURL)
 	}
+	s.cache.SetMinTTL(uint32(cfg.Resolver.Cache.MinTTL))
 	s.cache.SetPrefetchFn(func(name string, qtype uint16) (*dns.Message, error) {
 		return s.resolveAt(name, qtype, RootServers, 0)
 	})

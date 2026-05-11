@@ -40,6 +40,7 @@ resolver:
     enabled: true
     negative_ttl: 300
     prefetch: true
+    min_ttl: 30
 
 records:
   - name: example.home
