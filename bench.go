@@ -2,6 +2,12 @@
 
 // Run with: go run bench.go [flags]
 //
+// Phases:
+//  1. Cold      — kmresolv with empty cache (also warms cache)
+//  2. Upstream  — direct queries to upstream resolver
+//  3. Warm      — kmresolv with populated cache
+//  4. Burst     — high concurrency stress vs upstream
+//
 // Flags:
 //   -kmresolv  address of kmresolv          (default 127.0.0.1:53)
 //   -upstream  resolver to compare against  (default 1.1.1.1:53)
@@ -366,8 +372,8 @@ func main() {
 	fmt.Printf("Domains  : %d  |  Types : A, AAAA, MX, TXT\n\n",
 		len(benchQueries))
 
-	fmt.Printf("Phase 1/4 — Warm-up: resolving all domains into kmresolv cache...\n")
-	runPhase("warm-up", *kmAddr, benchQueries, *clients, *queries, *timeout)
+	fmt.Printf("Phase 1/4 — Cold: kmresolv with empty cache (also warms cache for later phases)\n")
+	kmCold := runPhase("kmresolv (cold)", *kmAddr, benchQueries, *clients, *queries, *timeout)
 
 	fmt.Printf("\nPhase 2/4 — Repeated domains via %s\n", *upAddr)
 	upRepeated := runPhase(*upAddr, *upAddr, benchQueries, *clients, *queries, *timeout)
@@ -381,13 +387,27 @@ func main() {
 	fmt.Printf("  kmresolv:\n")
 	kmBurst := runPhase("kmresolv (burst)", *kmAddr, benchQueries, *stress, stressQueries, *timeout)
 
-	printTable("Repeated Domains  (warm cache vs upstream)", []phaseStats{upRepeated, kmRepeated})
+	printTable("Cold vs Warm  (kmresolv cache miss → hit vs upstream)", []phaseStats{kmCold, upRepeated, kmRepeated})
 	printTable("Burst Stress Test  ("+fmt.Sprintf("%d", *stress)+" concurrent clients)", []phaseStats{upBurst, kmBurst})
 
 	fmt.Println()
+	if p50cold := kmCold.pct(50); p50cold > 0 {
+		if p50warm := kmRepeated.pct(50); p50warm > 0 {
+			fmt.Printf("  Cold → warm speedup (kmresolv cache effect):\n")
+			fmt.Printf("    P50  %6.1fx faster   (%s → %s)\n",
+				float64(p50cold)/float64(p50warm),
+				fmtDur(p50cold), fmtDur(p50warm))
+			fmt.Printf("    P99  %6.1fx faster   (%s → %s)\n",
+				float64(kmCold.pct(99))/float64(kmRepeated.pct(99)),
+				fmtDur(kmCold.pct(99)), fmtDur(kmRepeated.pct(99)))
+			fmt.Printf("    Throughput  %6.1fx higher  (%s → %s)\n",
+				kmRepeated.throughput()/kmCold.throughput(),
+				fmtThroughput(kmCold.throughput()), fmtThroughput(kmRepeated.throughput()))
+		}
+	}
 	if p50up := upRepeated.pct(50); p50up > 0 {
 		if p50km := kmRepeated.pct(50); p50km > 0 {
-			fmt.Printf("  Repeated-domain speedup vs %s:\n", *upAddr)
+			fmt.Printf("\n  Warm-cache speedup vs %s:\n", *upAddr)
 			fmt.Printf("    P50  %6.1fx faster   (%s → %s)\n",
 				float64(p50up)/float64(p50km),
 				fmtDur(p50up), fmtDur(p50km))
