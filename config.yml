@@ -1,34 +1,78 @@
+######################################################################
+# SERVER                                                             #
+# listen:    IP to bind to. Use 0.0.0.0 to listen on all interfaces  #
+# port:      UDP port for DNS queries. Standard port is 53           #
+# log_level: Log verbosity - debug, info, warn, or error             #
+######################################################################
 server:
     listen: 0.0.0.0
     port: 53
-    # Can be "debug", "info", "warn", "error"
     log_level: info
+
+######################################################################
+# RESOLVER                                                           #
+# timeout:        Seconds before an upstream query is abandoned      #
+# max_depth:      Max DNS referral hops before a query fails         #
+# max_concurrent: Simultaneous upstream lookups, 0 = unlimited       #
+# edns0:          Advertise EDNS0 for larger UDP payload support     #
+# tcp_fallback:   Retry over TCP if a UDP response is truncated      #
+######################################################################
 resolver:
     timeout: 3
     max_depth: 10
-    # Maximum simultaneous upstream resolutions. 0 = unlimited.
     max_concurrent: 64
     edns0: true
     tcp_fallback: true
+
+######################################################################
+# CACHE                                                              #
+# enabled:      Enable caching of DNS responses                      #
+# negative_ttl: Seconds to cache NXDOMAIN responses                  #
+# prefetch:     Refresh near-expired entries before they expire      #
+# min_ttl:      TTL floor; prevents caching with very short TTLs     #
+######################################################################
     cache:
         enabled: true
         negative_ttl: 300
         prefetch: true
         min_ttl: 30
+
+######################################################################
+# FORWARDER                                                          #
+# enabled:               Forward queries to configured upstreams     #
+# servers:               Upstream DNS IPs to query in order          #
+# fallback_to_iterative: Iterative fallback if all forwarders fail   #
+######################################################################
     forwarder:
-        # Set enabled: true to forward queries to upstream resolvers instead of
-        # iterating from root. Much faster; trades iterative accuracy for speed.
         enabled: false
         servers:
             - 1.1.1.1
             - 8.8.8.8
-        # If all forwarders fail, fall back to full iterative resolution.
         fallback_to_iterative: true
+
+######################################################################
+# CUSTOM RECORDS                                                     #
+# Define local DNS records answered directly by kmresolv.            #
+# name:  Hostname to resolve                                         #
+# type:  Record type - A, AAAA, CNAME, TXT, or MX                    #
+# ttl:   Time-to-live in seconds                                     #
+# value: IP address or hostname target for this record               #
+######################################################################
 records:
     - name: example.home
       type: A
       ttl: 3600
       value: 192.168.1.50
+
+######################################################################
+# FILTERING                                                          #
+# mode: blacklist - Block all listed domains and their subdomains    #
+# mode: whitelist - Allow only listed; block everything else         #
+# mode: off       - Disable filtering entirely                       #
+#                                                                    #
+# inline: Domains to filter, listed directly in this file            #
+# lists:  Remote URLs or local file paths to blocklist files         #
+######################################################################
 filtering:
     mode: "off"
     inline:
@@ -37,16 +81,42 @@ filtering:
     lists:
         - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
         - /etc/kmresolv/custom.list
+
+######################################################################
+# DASHBOARD                                                          #
+# Web interface for monitoring and managing kmresolv.                #
+#                                                                    #
+# enabled:  Toggle the web dashboard on or off                       #
+# listen:   IP address for the dashboard to bind to                  #
+# port:     HTTP port for the dashboard                              #
+# username: Basic auth username (leave empty to disable auth)        #
+# password: Basic auth password                                      #
+######################################################################
 dashboard:
     enabled: true
     listen: 0.0.0.0
     port: 8080
     auth:
-        # Leave username and password empty to disable authentication
         username: "admin"
         password: "changeme"
+
+######################################################################
+# UPDATER                                                            #
+# check_enabled: Check for new kmresolv releases on startup          #
+######################################################################
 updater:
     check_enabled: true
+
+######################################################################
+# MINECRAFT                                                          #
+# Built-in Minecraft server lifecycle manager.                       #
+#                                                                    #
+# enabled: Toggle the Minecraft server manager on or off             #
+# listen:  IP address for the Minecraft server to bind to            #
+# port:    Minecraft server port (default: 25565)                    #
+# min_ram: Minimum JVM heap allocation (e.g. 1G, 512M)               #
+# max_ram: Maximum JVM heap allocation (e.g. 2G, 8G)                 #
+######################################################################
 minecraft:
     enabled: false
     listen: 0.0.0.0
