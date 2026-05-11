@@ -176,26 +176,53 @@ func lowestTTL(msg *dns.Message) uint32 {
 	return min
 }
 
+const evictBatch = 64
+
 func (c *Cache) evictLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		now := time.Now()
 		for i := range c.shards {
-			s := &c.shards[i]
-			s.mu.Lock()
-			for k, e := range s.entries {
-				if now.After(e.expires) {
-					delete(s.entries, k)
-				}
-			}
-			for k, e := range s.negative {
-				if now.After(e.expires) {
-					delete(s.negative, k)
-				}
-			}
-			s.mu.Unlock()
+			c.evictShard(&c.shards[i], now)
 		}
+	}
+}
+
+func (c *Cache) evictShard(s *cacheShard, now time.Time) {
+	s.mu.RLock()
+	var deadEntries, deadNeg []string
+	for k, e := range s.entries {
+		if now.After(e.expires) {
+			deadEntries = append(deadEntries, k)
+		}
+	}
+	for k, e := range s.negative {
+		if now.After(e.expires) {
+			deadNeg = append(deadNeg, k)
+		}
+	}
+	s.mu.RUnlock()
+
+	for i := 0; i < len(deadEntries); i += evictBatch {
+		end := min(i+evictBatch, len(deadEntries))
+		s.mu.Lock()
+		for _, k := range deadEntries[i:end] {
+			if e, ok := s.entries[k]; ok && now.After(e.expires) {
+				delete(s.entries, k)
+			}
+		}
+		s.mu.Unlock()
+	}
+	for i := 0; i < len(deadNeg); i += evictBatch {
+		end := min(i+evictBatch, len(deadNeg))
+		s.mu.Lock()
+		for _, k := range deadNeg[i:end] {
+			if e, ok := s.negative[k]; ok && now.After(e.expires) {
+				delete(s.negative, k)
+			}
+		}
+		s.mu.Unlock()
 	}
 }
 
