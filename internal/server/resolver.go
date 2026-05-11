@@ -6,12 +6,23 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kohanmathers/kmresolv/internal/dns"
 	"github.com/kohanmathers/kmresolv/internal/logger"
 )
+
+type inflightCall struct {
+	done chan struct{}
+	msg  *dns.Message
+	err  error
+}
+
+func inflightKey(name string, qtype uint16) string {
+	return name + ":" + strconv.FormatUint(uint64(qtype), 10)
+}
 
 // Last updated: 7th May 2026 14:14 UTC
 var RootServers = []string{
@@ -41,14 +52,30 @@ func (s *Server) resolve(name string, qtype uint16) (*dns.Message, error) {
 		logger.LogDebug("cache hit: %s", name)
 		return msg, nil
 	}
+
+	key := inflightKey(name, qtype)
+	call := &inflightCall{done: make(chan struct{})}
+	if actual, loaded := s.inflight.LoadOrStore(key, call); loaded {
+		existing := actual.(*inflightCall)
+		<-existing.done
+		return existing.msg, existing.err
+	}
+
+	defer func() {
+		s.inflight.Delete(key)
+		close(call.done)
+	}()
+
 	msg, err := s.resolveAt(name, qtype, RootServers, 0)
 	if err != nil {
 		if strings.Contains(err.Error(), "NXDOMAIN") {
 			s.cache.SetNegative(name, qtype, s.cfg.Resolver.Cache.NegativeTTL)
 		}
+		call.err = err
 		return nil, err
 	}
 	s.cache.Set(name, qtype, msg)
+	call.msg = msg
 	return msg, nil
 }
 

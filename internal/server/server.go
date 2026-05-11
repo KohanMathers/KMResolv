@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,11 +17,12 @@ import (
 )
 
 type Server struct {
-	cfg     *config.Config
-	cache   *cache.Cache
-	filter  *filter.Filter
-	records *records.RecordStore
-	qlog    *QueryLog
+	cfg      *config.Config
+	cache    *cache.Cache
+	filter   *filter.Filter
+	records  *records.RecordStore
+	qlog     *QueryLog
+	inflight sync.Map
 
 	statTotalQueries   atomic.Uint64
 	statCacheHits      atomic.Uint64
