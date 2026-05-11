@@ -23,6 +23,7 @@ type Server struct {
 	records  *records.RecordStore
 	qlog     *QueryLog
 	pool     *udpPool
+	rawPool  sync.Pool
 	inflight sync.Map
 
 	statTotalQueries   atomic.Uint64
@@ -40,11 +41,12 @@ func New(cfg *config.Config) *Server {
 		cfg:       cfg,
 		filter:    filter.NewFilter(cfg),
 		records:   records.NewRecordStore(cfg),
-		qlog:      &QueryLog{max: 500},
+		qlog:      newQueryLog(500),
 		cache:     cache.NewCache(),
 		pool:      newUDPPool(),
 		startTime: time.Now(),
 	}
+	s.rawPool.New = func() any { return make([]byte, udpBufSize) }
 	if cfg.Minecraft.Enabled {
 		host := cfg.Dashboard.Listen
 		if host == "0.0.0.0" {
@@ -80,9 +82,12 @@ func (s *Server) Start() error {
 					done <- err
 					return
 				}
-				raw := make([]byte, n)
+				raw := s.rawPool.Get().([]byte)
 				copy(raw, buf[:n])
-				go s.handleQuery(conn, src, raw)
+				go func() {
+					s.handleQuery(conn, src, raw[:n])
+					s.rawPool.Put(raw)
+				}()
 			}
 		}()
 	}

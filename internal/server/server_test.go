@@ -133,7 +133,7 @@ func TestServFail(t *testing.T) {
 // ---- QueryLog ----
 
 func TestQueryLogAddRecent(t *testing.T) {
-	ql := &QueryLog{max: 10}
+	ql := newQueryLog(10)
 
 	for i := 0; i < 3; i++ {
 		ql.Add(QueryEntry{Domain: fmt.Sprintf("d%d.com", i)})
@@ -146,7 +146,7 @@ func TestQueryLogAddRecent(t *testing.T) {
 }
 
 func TestQueryLogMaxCapacity(t *testing.T) {
-	ql := &QueryLog{max: 3}
+	ql := newQueryLog(3)
 
 	for i := 0; i < 5; i++ {
 		ql.Add(QueryEntry{Domain: fmt.Sprintf("d%d.com", i)})
@@ -166,7 +166,7 @@ func TestQueryLogMaxCapacity(t *testing.T) {
 }
 
 func TestQueryLogRecentN(t *testing.T) {
-	ql := &QueryLog{max: 100}
+	ql := newQueryLog(100)
 
 	for i := 0; i < 10; i++ {
 		ql.Add(QueryEntry{Domain: fmt.Sprintf("d%d.com", i)})
@@ -182,7 +182,7 @@ func TestQueryLogRecentN(t *testing.T) {
 }
 
 func TestQueryLogEmpty(t *testing.T) {
-	ql := &QueryLog{max: 10}
+	ql := newQueryLog(10)
 	if got := ql.Recent(5); len(got) != 0 {
 		t.Errorf("expected 0 from empty log, got %d", len(got))
 	}
