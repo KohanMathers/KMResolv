@@ -129,7 +129,7 @@ prompt_java() {
     echo "  Do you want to install OpenJDK 25 (required for the Minecraft dashboard)?"
     echo "  Disable this if you already have JDK 25+ installed or do not want to install it."
     echo
-    read -rp "  Install OpenJDK 25? [y/N]: " answer
+    read -rp "  Install OpenJDK 25? [y/N]: " answer </dev/tty
     case "${answer,,}" in
         y|Y|yes) return 0 ;;
         *)     return 1 ;;
